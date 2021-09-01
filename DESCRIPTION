@@ -1,0 +1,23 @@
+Package: spaceheater
+Title: Convenience functions for spatial analysis
+Version: 0.0.0.9000
+Authors@R: 
+    person(given = "Nathan",
+           family = "Hoteling",
+           role = c("aut", "cre"),
+           email = "first.last@example.com",
+           comment = c(ORCID = "YOUR-ORCID-ID"))
+Description: Description here
+License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
+    license
+Encoding: UTF-8
+LazyData: true
+imports:
+  sf,
+  spatstat,
+  dplyr,
+  alphahull,
+  dbscan,
+  solitude
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.1.1
