@@ -18,6 +18,8 @@
 # The result should make sense
 #
 
+EPSG_WGS84 <- 4326
+
 #
 #' Get UTM Zone
 #'
