@@ -28,31 +28,22 @@ The sample data used here comes from a list of US breweries, filtered to include
 
 ```{r, echo=TRUE, message=FALSE, warning=FALSE}
 # Load data for breweries around Portland, OR
-data("pdx_breweries")
+data("pdx_breweries", package="spaceheater")
 pdx_pts1 <- pdx_breweries$geometry
 class(pdx_pts1)
 ```
 
-Alternatively, we can build the sf object from scratch.  It can be tedious and annoying, but sometimes a necessary task,
+Alternatively, we can build the `sf` object from scratch.  It can be tedious and annoying, but sometimes a necessary task, so 
 
 ```{r, echo=TRUE, message=FALSE, warning=FALSE}
-# Load data for breweries around Portland, OR
-EPSG_WGS84 <- 4326
-
-# Convert the lon,lat columns into sf_points
-crd_to_pts <- function(lon,lat, CRS=EPSG_WGS84) {
-  d <- lapply(1:length(lon), function(i) {sf::st_point(c(lon[i],lat[i]))})
-  return(d %>% sf::st_sfc(crs=CRS))
-}
-
-pdx_pts2 <- crd_to_pts(pdx_breweries$lon, pdx_breweries$lat)
-class(pdx_pts2)
-
+df.pdx <- pdx_breweries %>%
+  dplyr::select(byname, lon, lat) %>%
+  mutate(geometry = spaceheater::crd_to_points(lon, lat, EPSG_WGS84))
 ```
 
 ## Spatial Outliers
 
-Each of the spatial outlier methods implemented in `spaceheater` can be called from the basic function `spatial_outliers()`, which returns a list containing a vector depicting outlier status and an sf polygon representing the outlier region,
+Each of the spatial outlier methods implemented in `spaceheater` can be called from the basic function `spatial_outliers()`, which returns a list containing a vector depicting outlier status and an `sf` polygon representing the outlier region,
 
 ```{r, echo=TRUE, message=FALSE, warning=FALSE}
 x <- spatial_outliers(pdx_pts1)

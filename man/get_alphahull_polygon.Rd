@@ -18,9 +18,9 @@ value is fraction of diagonal of bounding box}
 sf GeometryCollection object with a polygon
 }
 \description{
-A convenience wrapper around the ashape() function in alphahull.
-The function creates a polygon around some collection of points, given inputs
-of tension and an optional buffer.
+A convenience wrapper around the alphahull::ashape() function.
+The function creates a polygon around a collection of sf points, given inputs
+for tension and an optional buffer.
 }
 \examples{
 data("pdx_breweries")

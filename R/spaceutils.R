@@ -37,23 +37,81 @@ spaceheater_utmzone <- function(lon) {
 }
 
 
-#' Get EPSG Code for local UTM projection
+#' Get EPSG Code
+#' 
+#' Get EPSG code for local UTM projection
+#' 
+#' This is a generic method to determine the EPSG code for a set of coordinates
+#' \code{epsg.numeric} will take a lonlat vector whereas \code{epsg.sfc} takes an
+#' sfc object and determines the EPSG code from the center of the bounding box.
+#' Computation is based on a method outlined in the text Geocomputation in R,
+#' by Robin Lovelace, section 7.3
 #'
-#' Compute the EPSG code for local UTM projection, based on GPS inputs.
-#' Calculation is based on standard formula:
-#' 32700 - round((45+lat)/90)*100 + round((183+lon)/6)
+#' @param x Coordinates or spatial object
 #'
-#' @param lon longitude GPS coordinate
-#' @param lat latitude GPS coordinate
-#'
-#' @return integer value for EPSG code
+#' @return An integer with EPSG value
 #' @export
 #'
 #' @examples
-#' crd <- c(-76.3451, 34.3352)
-#' spaceheater_epsg(crd[1], crd[2])
-spaceheater_epsg <- function(lon, lat) {
-  return( 32700 - round((45+lat)/90)*100 + round((183+lon)/6) )
+#' lonlat <- c(-76.2, 33.1)
+#' pt <- sf::st_point(crd)
+#' 
+#' get_epsg(crd)
+#' get_epsg(pt)
+get_epsg <- function(x) {UseMethod("epsg")}
+
+# Methods
+epsg.numeric <- function(x) {return(epsg1(x))}
+epsg.sfc <- function(x) {
+  z <- sf::st_bbox(x)
+  return(epsg1( c(mean(z["xmin"],z["xmax"]),
+                  mean(z["ymin"],z["ymax"]))))
 }
 
-#######
+# Calculation
+epsg1 <- function(lonlat) {
+  utm = (floor((lonlat[1] + 180) / 6) %% 60) + 1
+  if(lonlat[2] > 0) {
+    utm + 32600
+  } else{
+    utm + 32700
+  }
+}
+
+
+#
+# From an older gis.stackexchange post
+#
+epsg_old <- function(lonlat) {
+  return( 32700 - round((45+lonlat[2])/90)*100 + round((183+lonlat[1])/6) )
+  }
+
+
+#############
+
+
+#crd_to_lines
+#crd_to_pgons
+#crd_to_points
+crd_to_points <- function(lon,lat, CRS=EPSG_WGS84) {
+  d <- lapply(1:length(lon), function(i) {sf::st_point(c(lon[i],lat[i]))})
+  return(d %>% sf::st_sfc(crs=CRS))
+}
+
+#
+# TODO... implement these functions
+#
+#make_point <- function(lon, lat) { sf::st_point(c(lon, lat)) }
+#make_line <- function(lonlat) { lonlat %>% as.matrix() %>% sf::st_linestring() }
+#
+#crd_to_segments <- function(pts, grp, thresh) {
+#  if (length(pts) != length(v)) {stop("pts and v must be the same length!")}
+#  data.frame(geometry=pts, v=v) %>%
+#    mutate(z = purrr::map_dbl(v, function(x) {ifelse(x>=thresh, 1, 0)}),
+#           g = cumsum(z)) %>%
+#    group_by(g) %>%
+#    summarise(m = sf::st_coordinates(geometry)) %>% tidyr::nest() %>%          
+#    mutate(ln = purrr::map(data, make_line) %>% sf::st_sfc()) %>% 
+#    dplyr::select(g,ln)                                                      
+#}
+
