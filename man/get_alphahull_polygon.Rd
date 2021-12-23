@@ -28,6 +28,9 @@ pts <- pdx_breweries$geometry
 x1 <- get_alphahull_polygon(pts)
 x2 <- get_alphahull_polygon(pts, tension=0.2, buffer_size=0.1)
 plot(pts)
-plot(x1, add=T)
-plot(x2, add=T)
+plot(x1, add=TRUE)
+plot(x2, add=TRUE)
+}
+\seealso{
+\code{\link{get_alphahull_polygon()}}
 }

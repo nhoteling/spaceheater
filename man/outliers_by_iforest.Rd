@@ -11,9 +11,9 @@ outliers_by_iforest(pts, thresh = 0.95, tension = 0.3, buffer_size = 0.05)
 
 \item{thresh}{percentile value to use for determining outlier status}
 
-\item{buffer_size}{(optional) buffer around exterior points, in coordinate units}
+\item{tension}{(optional) value from 0 to 1 to control how tight polygon should wrap around points}
 
-\item{(optional)}{value from 0 to 1 to control how tight polygon should wrap around points}
+\item{buffer_size}{(optional) buffer around exterior points, in coordinate units}
 }
 \value{
 list with outlier status and sf polygon
@@ -30,8 +30,8 @@ data("pdx_breweries")
 pts <- pdx_breweries$geometry
 x <- outliers_by_iforest(pts)
 plot(pts)
-plot(pts[x[[1]]==-1], col="red", add=T)
-plot(x[[2]], add=T)
+plot(pts[x[[1]]==-1], col="red", add=TRUE)
+plot(x[[2]], add=TRUE)
 }
 \seealso{
 Other outlier functions: 

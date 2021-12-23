@@ -7,9 +7,8 @@ Authors@R:
            role = c("aut", "cre"),
            email = "first.last@example.com",
            comment = c(ORCID = "YOUR-ORCID-ID"))
-Description: Description here
-License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
-    license
+Description: Convenience functions for spatial analysis.
+License: `use_mit_license()`
 Encoding: UTF-8
 LazyData: true
 imports:
@@ -26,4 +25,13 @@ Suggests:
     rmarkdown
 VignetteBuilder: knitr
 Imports: 
-    magrittr
+    sf,
+    magrittr,
+    alphahull,
+    spatstat,
+    dplyr,
+    dbscan,
+    solitude,
+    stats,
+    spatstat.core,
+    spatstat.geom

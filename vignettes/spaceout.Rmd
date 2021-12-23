@@ -38,7 +38,7 @@ Alternatively, we can build the `sf` object from scratch.  It can be tedious and
 ```{r, echo=TRUE, message=FALSE, warning=FALSE}
 df.pdx <- pdx_breweries %>%
   dplyr::select(byname, lon, lat) %>%
-  mutate(geometry = spaceheater::crd_to_points(lon, lat, EPSG_WGS84))
+  mutate(geometry = spaceheater::crd_to_points(lon, lat))
 ```
 
 ## Spatial Outliers

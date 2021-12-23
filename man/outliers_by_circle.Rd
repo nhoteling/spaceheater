@@ -29,8 +29,8 @@ data("pdx_breweries")
 pts <- pdx_breweries$geometry
 x <- outliers_by_circle(pts)
 plot(pts)
-plot(pts[x[[1]]==-1], col="red", add=T)
-plot(x[[2]], add=T)
+plot(pts[x[[1]]==-1], col="red", add=TRUE)
+plot(x[[2]], add=TRUE)
 }
 \seealso{
 Other outlier functions: 

@@ -19,14 +19,15 @@ Spatial outlier method that uses distance from a central point to draw a box
 around a collection of points.  The distance to box boundaries is determined from the 90th
 percentile, or by user input.
 TODO: add manual center-point option, different xy distances
+TODO: adjust code for new epsg function
 }
 \examples{
 data("pdx_breweries")
 pts <- pdx_breweries$geometry
 x <- outliers_by_box(pts)
 plot(pts)
-plot(pts[x[[1]]==-1], col="red", add=T)
-plot(x[[2]], add=T)
+plot(pts[x[[1]]==-1], col="red", add=TRUE)
+plot(x[[2]], add=TRUE)
 }
 \seealso{
 Other outlier functions: 

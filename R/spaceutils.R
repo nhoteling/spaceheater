@@ -18,7 +18,15 @@
 # The result should make sense
 #
 
-EPSG_WGS84 <- 4326
+
+#' EPSG code for WGS84
+#'
+#' @return
+#' @export
+#'
+#' @examples
+#' epsg_wgs84()
+epsg_wgs84 <- function() {return(4326)}
 
 #
 #' Get UTM Zone
@@ -52,21 +60,40 @@ spaceheater_utmzone <- function(lon) {
 #' @return An integer with EPSG value
 #' @export
 #'
-#' @examples
-#' lonlat <- c(-76.2, 33.1)
-#' pt <- sf::st_point(crd)
+#' @examples 
+#' lonlat <- c(-76.2, 33.5)
+#' pt <- sf::st_point(lonlat)
 #' 
-#' get_epsg(crd)
+#' get_epsg(lonlat)
 #' get_epsg(pt)
-get_epsg <- function(x) {UseMethod("epsg")}
+get_epsg <- function(x) {UseMethod("get_epsg")}
 
 # Methods
-epsg.numeric <- function(x) {return(epsg1(x))}
-epsg.sfc <- function(x) {
+#' Get EPSG code for numeric
+#'
+#' @param x 
+#'
+#' @seealso \code{\link{get_epsg()}}
+#'
+#' @return
+#' @export
+#'
+get_epsg.default <- function(x) {return(epsg1(x))}
+#' Get EPSG code for SF Object
+#'
+#' @param x 
+#' 
+#' @seealso \code{\link{get_epsg()}}
+#' 
+#' @return
+#' @export
+#'
+get_epsg.sfc <- function(x) {
   z <- sf::st_bbox(x)
   return(epsg1( c(mean(z["xmin"],z["xmax"]),
                   mean(z["ymin"],z["ymax"]))))
 }
+
 
 # Calculation
 epsg1 <- function(lonlat) {
@@ -93,7 +120,23 @@ epsg_old <- function(lonlat) {
 #crd_to_lines
 #crd_to_pgons
 #crd_to_points
-crd_to_points <- function(lon,lat, CRS=EPSG_WGS84) {
+#' Coordinates to points
+#'
+#' Generate sf points from lon/lat columns
+#' 
+#' Use this function to create sf points from lon and lat columns.
+#'
+#' @param lon longitude
+#' @param lat latitude
+#' @param CRS (optional) the EPSG code; uses wgs84 by default
+#'
+#' @return spatial features column
+#' @export
+#'
+#' @examples
+#' data("pdx_breweries", package="spaceheater")
+#' pts <- crd_to_points(pdx_breweries$lon, pdx_breweries$lat)
+crd_to_points <- function(lon,lat, CRS=4326) {
   d <- lapply(1:length(lon), function(i) {sf::st_point(c(lon[i],lat[i]))})
   return(d %>% sf::st_sfc(crs=CRS))
 }
