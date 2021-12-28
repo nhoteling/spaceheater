@@ -31,6 +31,3 @@ plot(pts)
 plot(x1, add=TRUE)
 plot(x2, add=TRUE)
 }
-\seealso{
-\code{\link{get_alphahull_polygon()}}
-}

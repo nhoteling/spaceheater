@@ -7,10 +7,10 @@
 \method{get_epsg}{default}(x)
 }
 \arguments{
-\item{x}{}
+\item{x}{lonlat coordinates}
 }
 \value{
-
+An integer with EPSG value
 }
 \description{
 Get EPSG code for numeric

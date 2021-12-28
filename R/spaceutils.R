@@ -21,7 +21,7 @@
 
 #' EPSG code for WGS84
 #'
-#' @return
+#' @return Integer value for WGS84 epsg code
 #' @export
 #'
 #' @examples
@@ -45,6 +45,13 @@ spaceheater_utmzone <- function(lon) {
 }
 
 
+
+#
+# Function overloading with methods:
+# https://josiahparry.com/post/function-methods/
+# https://www.rdocumentation.org/packages/methods/versions/3.3.1/topics/Methods
+#
+
 #' Get EPSG Code
 #' 
 #' Get EPSG code for local UTM projection
@@ -57,38 +64,59 @@ spaceheater_utmzone <- function(lon) {
 #'
 #' @param x Coordinates or spatial object
 #'
+#' @seealso \code{\link{get_epsg.default()}} 
+#' @seealso \code{\link{get_epsg.sfc()}}  
+#' @seealso \code{\link{get_epsg.sf()}}
+#'
 #' @return An integer with EPSG value
 #' @export
 #'
 #' @examples 
-#' lonlat <- c(-76.2, 33.5)
-#' pt <- sf::st_point(lonlat)
+#' lonlat <- c(-76.2, 33.5)                 # coordinates
+#' pt1 <- sf::st_point(lonlat)              # sfc object
+#' pt2 <- sf::st_sfc(pt1) %>% sf::st_sf()   # sf object
 #' 
 #' get_epsg(lonlat)
-#' get_epsg(pt)
+#' get_epsg(pt1)
+#' get_epsg(pt2)
 get_epsg <- function(x) {UseMethod("get_epsg")}
 
 # Methods
 #' Get EPSG code for numeric
 #'
-#' @param x 
+#' @param x lonlat coordinates
 #'
 #' @seealso \code{\link{get_epsg()}}
 #'
-#' @return
+#' @return An integer with EPSG value
 #' @export
 #'
 get_epsg.default <- function(x) {return(epsg1(x))}
-#' Get EPSG code for SF Object
+#' Get EPSG code for SFC Object
 #'
-#' @param x 
+#' @param x sfc object
 #' 
 #' @seealso \code{\link{get_epsg()}}
 #' 
-#' @return
+#' @return An integer with EPSG value
 #' @export
 #'
 get_epsg.sfc <- function(x) {
+  z <- sf::st_bbox(x)
+  return(epsg1( c(mean(z["xmin"],z["xmax"]),
+                  mean(z["ymin"],z["ymax"]))))
+}
+
+#' Get EPSG code for SF Object
+#'
+#' @param x sf object
+#'
+#' @seealso \code{\link{get_epsg()}}
+#'
+#' @return An integer with EPSG value
+#' @export
+#'
+get_epsg.sf <- function(x) {
   z <- sf::st_bbox(x)
   return(epsg1( c(mean(z["xmin"],z["xmax"]),
                   mean(z["ymin"],z["ymax"]))))

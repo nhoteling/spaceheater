@@ -23,9 +23,18 @@ Computation is based on a method outlined in the text Geocomputation in R,
 by Robin Lovelace, section 7.3
 }
 \examples{
-lonlat <- c(-76.2, 33.5)
-pt <- sf::st_point(lonlat)
+lonlat <- c(-76.2, 33.5)                 # coordinates
+pt1 <- sf::st_point(lonlat)              # sfc object
+pt2 <- sf::st_sfc(pt1) \%>\% sf::st_sf()   # sf object
 
 get_epsg(lonlat)
-get_epsg(pt)
+get_epsg(pt1)
+get_epsg(pt2)
+}
+\seealso{
+\code{\link{get_epsg.default()}}
+
+\code{\link{get_epsg.sfc()}}
+
+\code{\link{get_epsg.sf()}}
 }

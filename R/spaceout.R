@@ -75,7 +75,6 @@ normalize_tension <- function(pts, tension) {
 #' @return sf GeometryCollection object with a polygon
 #' @export
 #'
-#' @seealso \code{\link{get_alphahull_polygon()}}
 #'
 #' @examples
 #' data("pdx_breweries")

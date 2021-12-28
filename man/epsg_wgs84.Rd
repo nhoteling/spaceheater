@@ -7,7 +7,7 @@
 epsg_wgs84()
 }
 \value{
-
+Integer value for WGS84 epsg code
 }
 \description{
 EPSG code for WGS84
