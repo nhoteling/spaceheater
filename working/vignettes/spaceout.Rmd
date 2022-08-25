@@ -1,0 +1,820 @@
+---
+title: "Space Heater"
+author: "Nathan Hoteling"
+date: "4/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# For data handling
+library(dplyr)
+library(stringr)
+
+# For spatial things
+library(sf)
+library(spatstat)             # for point pattern analysis
+# library(lwgeom)             # needed to run st_distance
+library(rnaturalearth)        # to get geo shapes
+library(rnaturalearthhires)   # same as above
+library(tidycensus)
+library(tigris)               # to download counties data
+
+library(alphahull)            # detailed pgons from point data
+library(dbscan)               # spatial clustering
+library(solitude)  # for isolation forest stuff
+
+# Plotting
+library(ggplot2)
+
+source("../R/spaceheater.R")
+source("../R/spaceout.R")
+```
+<br>
+
+## Introduction
+
+Space Heater is an effort to create some convenience functions to simplify steps in spatial analysis.  It is a work in progress, but so far a few simple spatial outlier methods have been implemented.
+
+<br>
+
+
+
+## Sample Data and Preliminaries
+
+The sample data used here comes from a list of US breweries, filtered to include only those which are within 150km of Portland, OR, one of the greatest beer cities in the world.
+
+```{r, echo=FALSE}
+
+# Read data
+df.cities <- read.csv("../data/us_cities.csv")
+df.breweries <- read.csv("../data/us_breweries.csv") %>% 
+  select(byname, lon, lat, type) 
+d <- lapply(seq_len(nrow(df.breweries)), function(i) {pt <- st_point(c(df.breweries$lon[i],df.breweries$lat[i]))})
+df.breweries$geometry <- st_sfc(d) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+
+# Select some places for testing the functions
+places_of_interest <- data.frame( city = c("Portland", "San Francisco", "San Diego", "Denver", "Chicago", "New York"),
+                                  state = c("Oregon", "California", "California", "Colorado", "Illinois", "New York"))
+
+
+# Get lon/lat values for each city/state and convert to spatial point via sf
+d <- lapply(seq_len(nrow(places_of_interest)), function(i) {
+  lon <- df.cities$longitude[ df.cities$state == places_of_interest$state[i] &  df.cities$city == places_of_interest$city[i] ]
+  lat <- df.cities$latitude[ df.cities$state == places_of_interest$state[i] &  df.cities$city == places_of_interest$city[i] ]
+  pt <- st_point(c(lon,lat))
+})
+df.places <- cbind(places_of_interest, st_sfc(d) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs') )
+
+
+# Compute distance from each city-of-interest
+d <- lapply(seq_len(nrow(df.places)), function(i) {
+  v <- as.integer(st_distance(df.places$geometry[i], df.breweries$geometry))/1000  # convert to km
+})
+df.tmp <- data.frame(do.call(cbind,d))
+names(df.tmp) <- paste("dist_",str_replace(df.places$city, pattern=" ", ""), sep="")
+df.breweries <- cbind(df.breweries, df.tmp)
+```
+
+```{r, echo=FALSE}
+# BONUS - Plot this stuff on a map!
+# download states & relevant counties (then save them locally)
+#fstates <- states(cb=TRUE, refresh=TRUE)
+#counties_OR <- counties(state="OR")
+#counties_WA <- counties(state="WA")
+fstates <- readRDS("../data/states.rds")
+counties_OR <- readRDS("../data/counties_OR.rds")
+counties_WA <- readRDS("../data/counties_WA.rds")
+counties <- readRDS("../data/counties.rds")
+
+# Datasets to look at later
+df.pdx <- df.breweries %>% filter(dist_Portland < 150)
+df.chi <- df.breweries %>% filter(dist_Chicago < 200)
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+
+p <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=df.pdx$geometry, size=0.75, color="#de2d26", alpha=0.5) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  labs(title="Breweries Near Portland, OR") +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+        size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+        panel.border = element_rect(fill = NA),
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+p
+```
+
+
+<details>
+<summary><b>References</b></summary>  
+
+US city data obtained from here (original source unknown):  
+https://gist.github.com/deepeeess/ec9382c61842caa79bb4ad43036efc4b  
+
+State and County shapes obtained from US Census via `tigris` package, which is loaded with `tidycensus`:  
+http://rstudio-pubs-static.s3.amazonaws.com/466824_1afe9c93585f4e95a43b44c5f6fbc3d8.html  
+
+US brewery data derived from American Brewers Association, plus some geocoding:  
+https://www.brewersassociation.org/directories/breweries/  
+
+</details>
+
+
+<br>
+
+## Spatial Outliers: Simple Methods
+
+Several approaches for determining spatial outliers are detailed below.  Each function takes a spatial features column (`sf_sfc`) object containing `sf_points`, plus some specific arguments, and returns a list with 1) a vector indicating whether each point is an outlier (-1) or not (+1), and 2) a `st_polygon` with the shape used to determine outlier status.
+
+### Box Method
+
+The Box Method is relatively quick-and-easy: the function determines a center point based on median values for lon and lat, then bounds are derived from user-defined quantiles (or 10th and 90th percentiles by default if user doesn't define them).  Prior to running this function, it's best to convert coordinates to local UTM with an appropriate EPSG code, otherwise it tends to rotate the rectangle in strange ways.
+
+<details>
+See appendix for an older version of this method that used boxplots and the interquartile range.
+<summary><b>CODE</b></summary> 
+```{r, message=FALSE, warning=FALSE}
+# Note: it's a good idea to convert coordinates to a local UTM projection
+# prior to using this one.  Otherwise the box rotates in strange ways...
+#
+# see spaceheater.R for details
+# outliers_by_box <- function(pts, pct=NA)
+
+# Working with function output
+pts_tmp <- df.pdx$geometry %>% st_transform(crs="EPSG:26910")  # convert to local UTM coordinates
+d <- outliers_by_box( pts_tmp )
+df.pdx$box <- d[[1]]
+box <- st_sfc(d[[2]], crs="EPSG:26910") #%>% 
+  # st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+
+# Plot the results
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.bx <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=box, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.pdx$geometry, aes(color=as.factor(df.pdx$box)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none")
+
+```
+</details>
+<br>
+<b>Note:</b> In this example, <b> `r round(nrow(df.pdx %>% filter(box==1)) / nrow(df.pdx)*100, digits=0)`% </b> of the points, are preserved.
+
+```{r, echo=FALSE}
+p.bx
+```
+
+### Circle Method
+
+The circle method is, in general, best if you already have a center point in mind and want to keep points within some pre-defined radius (ie: you want all points within 1000 m of some point (lon,lat)).  If the user doesn't supply `center_point` and `r` variables, then the function will default to using the percentile method to determine a center point, as in the square method above.  In this case, the user should pass an argument for `pct`, otherwise the function will default to the 90th percentile (ie: pct=0.90).
+
+<details>
+<summary><b>CODE</b></summary> 
+```{r, message=FALSE, warning=FALSE}
+# See spaceheater.R for details
+#outliers_by_circle <- function(pts, center_point=NA, r=NA, pct=NA) {
+
+  
+# Working with function output
+d <- outliers_by_circle(df.pdx$geometry)
+df.pdx$circle <- d[[1]]
+circle <- st_sfc(d[[2]]) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+#
+
+# Plot the results
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.cr <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=circle, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.pdx$geometry, aes(color=as.factor(df.pdx$circle)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none")
+
+```
+</details>
+<br>
+<b>Note:</b> In this example, <b> `r round(nrow(df.pdx %>% filter(circle==1)) / nrow(df.pdx)*100, digits=0)`% </b> of the points, are preserved.
+
+
+```{r, echo=FALSE}
+p.cr
+```
+
+<br>
+
+### Polygon Method
+
+With the Polygon Method, some user-defined percentage (or 90% by default) of points closest to a specific point (or automatically determined point as in the methods above) are kept and an arbitrary polygon is traced along this path.  The tension of the polygon trace can be adjusted with the tension parameter (via `alphahull`; see References for more details), and a buffer area and rounded corners are controlled with the buffer_size parameter.  Note that, in the example here, there are some large empty regions NW of the main group of points; if it is of interest, the user can exclude that area by adjusting the tension parameter (smaller values = more tension).
+
+<details>
+<summary><b>CODE</b></summary> 
+The original version of this function used `convex_hull` from the `sf` package, but the current version uses functions from the `alphahull` package since they allow for greater flexibility in adjusting the tension of the polygon trace.  See Appendix for the older version.
+
+```{r, message=FALSE, warning=FALSE}
+#
+# Use alpha convex hull to create a tighter boundary via alphahull package
+# See spaceheater.R for details
+#get_alphahull_polygon <- function(pts, tension)
+#outliers_by_polygon <- function(pts, center_point=NA, pct=NA, tension=0.5)
+#
+
+# Working with function output
+d <- outliers_by_polygon(df.pdx$geometry, buffer_size=0.05)
+df.pdx$polygon <- d[[1]]
+polygon <- st_sfc(d[[2]]) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+#
+
+# Plot the results
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.pg <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=polygon, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.pdx$geometry, aes(color=as.factor(df.pdx$polygon)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none")
+
+```
+
+</details>
+
+<br>
+
+<b>Note:</b> In this example, <b> `r round(nrow(df.pdx %>% filter(polygon==1)) / nrow(df.pdx)*100, digits=0)`% </b> of the points, are preserved.  
+<b>TODO:</b> Add ability to use custom polygon.  
+
+```{r, echo=FALSE}
+p.pg
+```
+
+<br>
+
+### Cluster Method
+
+The Cluster Method uses the `dbscan` function to determine density-based clustering based on some input parameters.  Points that don't fall into a cluster are considered outliers (`dbscan` places any point it cannot place into a cluster into "cluster 0").  Prior to running this method, the user should run `dbscan::kNNdistplot` to help determine a suitable value for the `eps` parameter, which is related to proximity to neighboring points in the algorithm.  As with the Polygon Method, the user also has control over the tension parameter (via `alphahull`) to determine how tightly polygons will wrap around the clustered points, and a buffer_size parameter to add space between the points on the perimeter and rounded edges.  Due to the presence of "edge effects" in which the derived polygon overlaps some of the points deemed outliers, the function implemented here performs an additional iteration whereby any point that intersects the polygon is preserved.  This method will generally return multiple polygons, combined into a multipolygon object.
+
+<details>
+<summary><b>CODE</b></summary> 
+
+```{r, message=FALSE, warning=FALSE}
+# Note: run kNNdistplot(m, k=5) first to get a better estimate for eps
+# See spaceheater.R for function details
+#outliers_by_cluster <- function(pts, eps=0.25, MinPts=5, tension=0.75) 
+
+
+# Run the function
+d <- outliers_by_cluster(df.pdx$geometry, eps=0.25, buffer_size=0.05)
+df.pdx$dbclust <- d[[1]]
+dbclust <- st_sfc(d[[2]]) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+
+# Plot the results
+p.db <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=dbclust, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.pdx$geometry, aes(color=as.factor(df.pdx$dbclust)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none")
+
+
+
+```
+</details>
+
+<br>
+
+<b>Note:</b> In this example, <b> `r round(nrow(df.pdx %>% filter(dbclust==1)) / nrow(df.pdx)*100, digits=0)`% </b> of the points, are preserved.  
+
+```{r, echo=FALSE}
+p.db
+```
+
+<br>
+
+## Another example
+
+Now that there are four basic functions to choose from, it makes sense to simplify things a bit and merge these into a single function, `spatial_outliers`.  The new function is demonstrated with breweries within 200 km of Chicago.  The presence of Lake Michigan complicates the concept of outlier, but the Polygon and Cluster methods can still achieve reasonable results (and they can be improved upon with some parameter tuning, if needed).
+
+<details>
+<summary><b>CODE</b></summary> 
+```{r, message=FALSE, warning=FALSE}
+# A general function to call any of the outlier methods
+# defined in spaceheater.R:
+# spatial_outliers(pts, method)
+
+# These are read in code chunk in the Intro section:
+# counties <- counties()
+# fstates <- readRDS("../data/states.rds")
+# counties <- readRDS("../data/counties.rds")
+# df.chi <- df.breweries %>% filter(dist_Chicago < 200)
+
+
+# Call each method using default parameters
+pts_tmp <- df.chi$geometry %>% st_transform(crs="EPSG:26916")  # convert to local UTM coordinates
+d.box <- spatial_outliers(pts_tmp, method="box")
+d.circle <- spatial_outliers(df.chi$geometry, method="circle")
+d.polygon <- spatial_outliers(df.chi$geometry, method="polygon", tension=0.1)
+d.cluster <- spatial_outliers(df.chi$geometry, method="cluster", tension=0.1)
+
+df.chi$box <- d.box[[1]]
+df.chi$circle <- d.circle[[1]]
+df.chi$polygon <- d.polygon[[1]]
+df.chi$cluster <- d.cluster[[1]]
+
+original_proj <- st_crs(df.chi$geometry)$input
+pp_box <- st_sfc(d.box[[2]], crs="EPSG:26916")
+pp_circle <- st_sfc(d.circle[[2]], crs=original_proj)
+pp_polygon <- st_sfc(d.polygon[[2]], crs=original_proj)
+pp_cluster <- st_sfc(d.cluster[[2]], crs=original_proj) 
+
+# Plot the results
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.ch1 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_box, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.chi$geometry, aes(color=as.factor(df.chi$box)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  labs(title="Box") +
+  coord_sf(crs = st_crs(2163), xlim = c(656250, 1326562), ylim = c(-489575, 
+         55825)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+p.ch2 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_circle, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.chi$geometry, aes(color=as.factor(df.chi$circle)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  labs(title="Circle") +
+  coord_sf(crs = st_crs(2163), xlim = c(656250, 1326562), ylim = c(-489575, 
+         55825)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+p.ch3 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_polygon, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.chi$geometry, aes(color=as.factor(df.chi$polygon)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  labs(title="Polygon") +
+  coord_sf(crs = st_crs(2163), xlim = c(656250, 1326562), ylim = c(-489575, 
+         55825)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+p.ch4 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_cluster, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.chi$geometry, aes(color=as.factor(df.chi$cluster)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  labs(title="Cluster") +
+  coord_sf(crs = st_crs(2163), xlim = c(656250, 1326562), ylim = c(-489575, 
+         55825)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+```
+</details>
+
+<br>
+
+<b>Note:</b> In this example,   
+- Box preserved <b> `r round(nrow(df.chi %>% filter(box==1)) / nrow(df.chi)*100, digits=0)`% </b> of the points.  
+- Circle preserved <b> `r round(nrow(df.chi %>% filter(circle==1)) / nrow(df.chi)*100, digits=0)`% </b> of the points.  
+- Polygon preserved <b> `r round(nrow(df.chi %>% filter(polygon==1)) / nrow(df.chi)*100, digits=0)`% </b> of the points.  
+- Cluster preserved <b> `r round(nrow(df.chi %>% filter(cluster==1)) / nrow(df.chi)*100, digits=0)`% </b> of the points.    
+
+```{r, echo=FALSE, fig.show="hold", out.width="50%"}
+p.ch1
+p.ch2
+p.ch3
+p.ch4
+```
+
+<br>
+
+
+## Spatial Outliers: More Complicated Methods
+
+In this section we discuss a few other methods that are somewhat more complex.
+
+### Density Method
+
+We can use the number of spatial points per unit area as a criteria for determining outlier status.  With this method, the density is computed with functions available from `spatstat` and the resulting set of gridded points is used to derive a set of contour lines, as seen in the plots below.  For density-based outlier determination, the user will need to make a judgment as to what the cutoff value should be.  By default the threshold is set to 10% of the maximum density value.  The user can control the size of density kernels with the `sigma` parameter.
+
+<b>Note:</b> With the current implementation contours that overlap with the edge of the data (ie: they don't form a closed polygon) are discarded.  TODO: fix this.
+
+<details>
+<summary><b>CODE</b></summary> 
+```{r, message=FALSE, warning=FALSE}
+# Use function defined in spaceheater.R
+d.density1 <- outliers_by_density(df.pdx$geometry, thresh=0.1, sigma=0.2)
+d.density2 <- outliers_by_density(df.chi$geometry, thresh=0.1, sigma=0.2)
+
+#pp_contours1 <- get_density_contours(df.pdx$geometry, sigma=0.2)
+#pp_contours2 <- get_density_contours(df.chi$geometry, sigma=0.2)
+
+df.pdx$density <- d.density1[[1]]
+df.chi$density <- d.density2[[1]]
+pp_density1 <- d.density1[[2]]
+pp_density2 <- d.density2[[2]]
+
+
+# Make plots
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.ctr1 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_density1, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.pdx$geometry, aes(color=as.factor(df.pdx$density)), 
+          size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  labs(title="Breweries Near Portland, OR") +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+        size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+        panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+
+  
+
+p.ctr2 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_density2, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.chi$geometry, aes(color=as.factor(df.chi$density)), 
+          size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(656250, 1326562), ylim = c(-489575, 
+         55825)) +
+  labs(title="Breweries Near Chicago, IL") +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+        size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+        panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+```
+</details>
+
+```{r, echo=FALSE, fig.show="hold", out.width="50%"}
+p.ctr1
+p.ctr2
+```
+
+
+### iForest Method
+
+The iforest method is based on Isolation Forest anomaly detection, facilitated via the `solitude` package.  The algorithm is designed for general anomaly detection and not necessarily for spatial outliers, but we demonstrate some potential applicability here.  The function here takes user inputs for quantile threshold to determine significance, and a tension variable to control how tightly the polygon wraps around the datapoints.  The function as implemented here corrects for some "edge effects" by creating the polygon based on algorithm results and then iterating outlier status based on whether the points touch the polygon.
+
+<details>
+<summary><b>CODE</b></summary> 
+```{r, message=FALSE, warning=FALSE}
+# Use function defined in spaceheater.R
+d.iforest1 <- outliers_by_iforest(df.pdx$geometry, thresh=0.9, tension=0.1)
+d.iforest2 <- outliers_by_iforest(df.chi$geometry, thresh=0.9, tension=0.1)
+
+df.pdx$iforest <- d.iforest1[[1]]
+df.chi$iforest <- d.iforest2[[1]]
+pp_iforest1 <- d.iforest1[[2]]
+pp_iforest2 <- d.iforest2[[2]]
+
+# Make plots
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.ifor1 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_iforest1, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.pdx$geometry, aes(color=as.factor(df.pdx$iforest)), 
+          size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  labs(title="Breweries Near Portland, OR") +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+        size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+        panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+
+  
+
+p.ifor2 <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pp_iforest2, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.chi$geometry, aes(color=as.factor(df.chi$iforest)), 
+          size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(656250, 1326562), ylim = c(-489575, 
+         55825)) +
+  labs(title="Breweries Near Chicago, IL") +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+        size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+        panel.border = element_rect(fill = NA),
+        legend.position = "none",
+        plot.title=element_text(vjust=-8, hjust=0.05, face="bold", color="grey20"))
+
+```
+</details>
+
+```{r, echo=FALSE, fig.show="hold", out.width="50%"}
+p.ifor1
+p.ifor2
+```
+
+<br>
+<br>
+
+## Using These Functions
+
+The spatial outlier functions described in this section were defined individually in code chunks within this document.  However, to facilitate reuse, the functions are also defined in the file `R/spaceheater.R` so they can all be called from a separate R session or from another script.  One long-term goal for this effort is to incorporate these functions into a separate R package.
+
+The example here shows how the functions are called from the external script.
+
+<details>
+<summary><b>CODE</b></summary> 
+```{r, message=FALSE, warning=FALSE}
+
+# Data / Prep
+#source("../data/spaceheater.R")              # Source the R file
+fstates <- readRDS("../data/states.rds")  # states for nice plotting
+df.nyc <- df.breweries %>%             # Read data 
+  filter(dist_NewYork < 150)           # needs to have points defined with sf package
+original_proj <- st_crs(df.nyc$geometry)$input   # Get the projection
+
+
+# Call the spatial_outliers function with appropriate method, plus whatever custom parms you want to specify
+# Methods: "box", "circle", "polygon", "cluster"
+d.pgon <- spatial_outliers(df.nyc$geometry, method="cluster", eps=0.20, MinPts=10)     
+df.nyc$pgon <- d.pgon[[1]]                                        # First item is a vector
+pgon <- st_sfc(d.pgon[[2]], crs=original_proj)                    # Second item is polygon, for plotting
+
+  
+# Plot the results
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.nyc <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  #geom_sf(data=counties, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=pgon, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.nyc$geometry, aes(color=as.factor(df.nyc$pgon)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(1875000, 2450000), ylim = c(-370000, 
+         213000)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none") 
+ 
+p.nyc 
+```
+</details>
+
+<br>
+<br>
+
+## TODO: More Work
+
+<details>
+<summary><b>Improvements</b></summary> 
+Some possible improvements:     
+<ul>
+  <li>More comprehensive testing / bug checking</li>
+  <li>Add custom polygon option to Polygon Method</li>
+  <li>Be smarter / better about coordinate transformations</li>
+  <li>More detailed examples to show parameter effects, when each is relevant</li>  
+</ul>
+</details>
+
+<details>
+<summary><b>More Spatial Outlier Methods</b></summary> 
+`SpatialEco` package:  
+https://github.com/jeffreyevans/spatialEco  
+
+
+Random Walk Bipartite Graph (RWBP) method:  
+https://rdrr.io/cran/RWBP/  
+
+Network kernal density estimate (NKDE) method:  
+https://cran.r-project.org/web/packages/spNetwork/vignettes/NKDE.html  
+</details>
+
+
+<details>
+<summary><b>Beyond Spatial Outliers</b></summary> 
+Other convenience functions to (possibly) work on:  
+- `get_h3_hex` convenience function  
+- Probabalistic intersection of ellipses (see appendix)  
+- Space/time interpolation?   
+</details>
+
+## References / Further Reading
+
+Reference for `sf` and other spatial things:  
+https://geocompr.robinlovelace.net/  
+https://geocompr.robinlovelace.net/spatial-class.html  
+
+Good summary of `sf` package:  
+https://r-spatial.github.io/sf/articles/sf1.html  
+https://r-spatial.github.io/sf/reference/st.html  
+https://www.r-spatial.org/r/2018/10/25/ggplot2-sf-2.html  
+https://r-spatial.github.io/sf/articles/sf5.html  
+https://r-spatial.github.io/sf/reference/geos_measures.html  
+https://r-spatial.github.io/sf/reference/st_transform.html  
+
+Point Pattern Analysis:  
+https://mgimond.github.io/Spatial/point-pattern-analysis-in-r.html#pppR10  
+
+Technical details about `alhpahull` method:  
+https://rdrr.io/cran/alphahull/  
+https://cran.r-project.org/web/packages/alphahull/vignettes/alphahull.pdf  
+
+Details about `dbscan`    
+http://www.sthda.com/english/wiki/wiki.php?id_contents=7940  
+https://cran.r-project.org/web/packages/dbscan/vignettes/hdbscan.html  
+
+## Appendix
+
+<details>
+<summary><b>ARCHIVE: Box Method</b></summary> 
+The first version of the Box Method used a boxplot approach, in which data are isolated using the interquartile range in both x and y coordinate space.  This resulted in a lot of data points being marked as "outliers", and was inherently less flexibile, so it was revised to include user inputs (or defaults) for quantile cutoff points, and used x and y distance from a fixed centroid instead of coordinate values to implement the cutoff.  The method is still available in spaceheater as `outliers_by_quantile()`.
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# This is an alternative, but the result is not what you might expect
+outliers_by_quantile <- function(pts, pct_lo=NA, pct_hi=NA) {
+  # Variables: Use Interquartile Range by default
+  lo <- ifelse(!is.na(pct_lo), pct_lo, 0.25)
+  hi <- ifelse(!is.na(pct_hi), pct_hi, 0.75)
+  m <- data.frame(st_coordinates(pts))
+  md.x <- median(m$X)
+  md.y <- median(m$Y)
+  x <- quantile(m$X, c(lo,hi))
+  y <- quantile(m$Y, c(lo,hi))
+  
+  # Spatial operations
+  d.pgon <- list( rbind( c(x[1], y[2]), 
+                         c(x[2], y[2]), 
+                         c(x[2], y[1]), 
+                         c(x[1], y[1]), 
+                         c(x[1], y[2]) ))
+  pgon <- st_polygon( d.pgon ) 
+  cntr <- st_point( c(md.x, md.y) )
+  b <- as.integer(st_within(pts, pgon))
+  b[ is.na(b) ] <- -1
+  
+  # Return a list with 
+  # [1] vector indicating point is inside (1) / outside (NA) of area
+  # [2] polygon of area
+  return(list(b,pgon))
+}
+```
+</details>
+
+
+
+<details>
+<summary><b>ARCHIVE: Polygon Function</b></summary> 
+The Polygon Method initially used the `convex_hull` function available from the `sf` package, but the resulting polygons do not trace the data points closely since there is no option to modify tension.  For this reason, the function was updated to use functions available in the `alphahull` package.
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# Function
+#
+outliers_by_polygon_old <- function(pts, center_point=NA, pct=NA) {
+   # Variables -n- stuff
+  original_proj <- st_crs(pts)$input                  # get original projection
+  pts <- st_transform(pts, crs=st_crs("+proj=utm"))   # convert to UTM so we work in meters
+  
+  # logic to handle input variables
+  if (!is.na(center_point)) {
+    cntr <- st_sfc( center_point ) %>% st_set_crs( st_crs(pts)$input ) # make sure objects have the same projection
+  } else {
+    q <- ifelse( !is.na(pct), pct, 0.90)
+    m <- data.frame(st_coordinates(pts))
+    md.x <- median(m$X)
+    md.y <- median(m$Y)
+    cntr <- st_sfc(st_point( c(md.x, md.y))) %>% st_set_crs( st_crs(pts)$input )
+  }
+  
+   # Spatial operations
+  dst <- as.integer(st_distance(cntr, pts))               # Compute distance from center to each point
+  r <- quantile(dst, c(q))                                # distance of the specified percentile
+  b <- ifelse(dst <= r, +1, -1)                           # which points are within distance r from center
+  
+  # This returns a circle wtf
+  pgon <- st_convex_hull( st_union(pts[ b==1 ])  ) %>%    # Create convex hull from the points
+    st_transform(crs=st_crs(original_proj))         # convert back to orig projection  
+  
+  # Return a list with 
+  # [1] vector indicating point is inside (1) / outside (NA) of area
+  # [2] polygon (circle) of area
+  return(list(b,pgon))
+}
+
+# Working with function output
+d <- outliers_by_polygon(df.pdx$geometry)
+df.pdx$contour <- d[[1]]
+contour <- st_sfc(d[[2]]) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+#
+
+# Plot the results
+cols <- c("-1" = "#de2d26", "1" = "#009933")
+p.cn <- ggplot() +
+  geom_sf(data=fstates, size=0.6,color="grey65",fill="cornsilk") +
+  geom_sf(data=counties_OR, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=counties_WA, size=0.2, color="grey65", fill=NA) +
+  geom_sf(data=contour, size=0.5, color="grey50", alpha=0.3) +
+  geom_sf(data=df.pdx$geometry, aes(color=as.factor(df.pdx$contour)), size=0.75, alpha=0.5) +
+  scale_color_manual(values = cols) +
+  coord_sf(crs = st_crs(2163), xlim = c(-1900000, -1550000), ylim = c(150000, 500000)) +
+  theme(panel.grid.major = element_line(colour = "grey55", linetype = "dashed", 
+         size = 0.2), panel.background = element_rect(fill = "aliceblue"), 
+         panel.border = element_rect(fill = NA),
+        legend.position = "none")
+
+
+```
+
+</details>
+
+
+
+<details>
+<summary><b>Document Outline</b></summary> 
+
+<b>Function:</b> `spatial_outliers(data, method, ...)` to identify outliers from a collection of spatial points.  
+Method Options:  
+  - squares  
+  - circles  
+  - ellipses  
+  - contours  
+  - kernal density (based on `OutlierDetection` package)  
+  - Random Walk Bipartite Graph (based on `RWBP` package)  
+Returns: A list of 1) Boolean indicator of outlier status, 2) Polygon of derived region  
+  
+<br>
+
+<b>Function:</b> `get_h3_hex(data, method, ...)` to convert spatial points into hexagons via h3 python package (and/or analagous R package?)  
+Method options:  
+  - Python method via `reticulate`  
+  - Analagous R package...  
+
+<br>
+
+<b>Functions:</b> `create_ellipse()` and `intersect_ellipses()` to combine probability ellipses with different methods  
+Method options:  
+  - Uniform probability inside ellipse  
+  - Gaussian probability inside ellipse  
+  - Maybe even generalize to polygon, not just ellipse
+
+</details>
+
+<br>

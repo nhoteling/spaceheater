@@ -1,0 +1,150 @@
+---
+title: "Alphahull"
+output: html_document
+---
+
+<hr>
+<br>
+<br>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# For data handling
+library(dplyr)
+library(stringr)
+
+# For spatial things
+library(sf)
+library(spatstat)             # for point pattern analysis
+# library(lwgeom)             # needed to run st_distance
+library(rnaturalearth)        # to get geo shapes
+library(rnaturalearthhires)   # same as above
+library(tidycensus)
+library(tigris)               # to download counties data
+
+library(alphahull)            # detailed pgons from point data
+library(dbscan)               # spatial clustering
+library(solitude)  # for isolation forest stuff
+
+# Plotting
+library(ggplot2)
+
+source("../R/spaceheater.R")
+source("../R/spaceout.R")
+```
+
+
+```{r, echo=FALSE}
+
+# Read data
+df.cities <- read.csv("../data/us_cities.csv")
+df.breweries <- read.csv("../data/us_breweries.csv") %>% 
+  select(byname, lon, lat, type) 
+d <- lapply(seq_len(nrow(df.breweries)), function(i) {pt <- st_point(c(df.breweries$lon[i],df.breweries$lat[i]))})
+df.breweries$geometry <- st_sfc(d) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+
+# Select some places for testing the functions
+places_of_interest <- data.frame( city = c("Portland", "San Francisco", "San Diego", "Denver", "Chicago", "New York"),
+                                  state = c("Oregon", "California", "California", "Colorado", "Illinois", "New York"))
+
+
+# Get lon/lat values for each city/state and convert to spatial point via sf
+d <- lapply(seq_len(nrow(places_of_interest)), function(i) {
+  lon <- df.cities$longitude[ df.cities$state == places_of_interest$state[i] &  df.cities$city == places_of_interest$city[i] ]
+  lat <- df.cities$latitude[ df.cities$state == places_of_interest$state[i] &  df.cities$city == places_of_interest$city[i] ]
+  pt <- st_point(c(lon,lat))
+})
+df.places <- cbind(places_of_interest, st_sfc(d) %>% st_set_crs('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs') )
+
+
+# Compute distance from each city-of-interest
+d <- lapply(seq_len(nrow(df.places)), function(i) {
+  v <- as.integer(st_distance(df.places$geometry[i], df.breweries$geometry))/1000  # convert to km
+})
+df.tmp <- data.frame(do.call(cbind,d))
+names(df.tmp) <- paste("dist_",str_replace(df.places$city, pattern=" ", ""), sep="")
+df.breweries <- cbind(df.breweries, df.tmp)
+
+# Datasets to look at later
+df.pdx <- df.breweries %>% filter(dist_Portland < 150)
+df.chi <- df.breweries %>% filter(dist_Chicago < 200)
+```
+
+## Introduction
+
+The alpha convex hull underlies several of the spatial outlier methods implemented in `spaceheater`.  The method is implemented via the `alphahull` package (however, if this proves too slow for some applications there may be an option to use an [Rcpp version](https://github.com/federicoairoldi/ProgettoPACS) instead).  For this reason, it's worth taking a closer look at exactly how it works, and how the parameters affect the output.
+
+```{r}
+pts <- df.pdx$geometry
+tension <- c(1.00, 0.50, 0.10, 0.05)
+
+pgon <- lapply(1:length(tension), function(i) {
+  return( get_alphahull_polygon(pts, tension=tension[i], buffer_size=0) )
+})
+
+p.tension1 <- lapply(1:length(tension), function(i) {
+  p <- ggplot() +
+    geom_sf(data=pts, aes(geometry=geometry), color="grey65") +
+    geom_sf(data=pgon[[i]], aes(geometry=geometry), fill=NA) +
+    labs(title = paste("tension = ", tension[i], sep="")) +
+    theme_void()
+  return(p)
+})
+
+```
+
+```{r, echo=FALSE, fig.show="hold", out.width="50%"}
+p.tension1[[1]]
+p.tension1[[2]]
+p.tension1[[3]]
+p.tension1[[4]]
+```
+
+## How Does It Work?
+
+dsfasdf
+sdfsadf
+sdf
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+
+crd <- as.data.frame(st_coordinates(pts))
+crd1 <- crd[!duplicated(crd),]
+
+
+
+
+p.tension2 <- lapply(1:length(tension), function(i) {
+  alpha <- normalize_tension(pts, tension[i])
+  x <- alphahull::ashape(crd1, alpha=alpha)
+  
+  ah <- as.data.frame(alphahull::ahull(crd1, alpha=alpha)$complement) %>%
+    filter(r==alpha)
+  d <- lapply(1:nrow(ah), function(j) {
+    cntr <- st_sfc(st_point( c(ah$c1[j], ah$c2[j]))) %>% st_set_crs( st_crs(pts)$input )
+    cr <- st_buffer(cntr, dist = ah$r[j])
+    return(list(matrix(st_coordinates(cr)[,c(1,2)], ncol=2)))  # this is stupid
+  })
+  circle <- st_sfc(st_multipolygon(d)) %>% st_set_crs( st_crs(pts)$input )
+  
+  p <- ggplot() +
+    geom_sf(data=circle,aes(geometry=geometry), fill=NA, color="grey75",size=0.2) +
+    geom_sf(data=pts, aes(geometry=geometry), color="grey65") +
+    geom_point(data=data.frame(x$x)[x$alpha.extremes,], 
+               aes(x=X1,y=X2), size=2,color="#de2d26") +
+    geom_sf(data=pgon[[i]], aes(geometry=geometry), fill=NA) +
+    labs(title = paste("tension = ", tension[i], sep="")) +
+    theme_void()
+  return(p)
+})
+```
+
+```{r, echo=FALSE, fig.show="hold", out.width="50%"}
+p.tension2[[1]]
+p.tension2[[2]]
+p.tension2[[3]]
+p.tension2[[4]]
+```
