@@ -1,0 +1,318 @@
+---
+title: "Route Stuff"
+author: "Nathan Hoteling"
+date: "3/8/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(stringdist)
+library(osmdata)
+library(osrm)
+library(ggplot2)
+library(h3)
+library(RcppRoll)
+
+library(kableExtra)
+
+source("R/utils.R")
+```
+
+<hr>
+<br>
+<br>
+
+## Data Simulations
+
+A simulated dataset is generated from the travel route between Portland, OR and Portland, ME.  City coordinates are obtained from OpenStreetMap via `osmdata` and the route between cities from `osrm`,
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r, message=FALSE, warning=FALSE}
+
+# Coords for  Portland, OR
+pdx <- osmdata::getbb("Portland, OR", format_out="sf_polygon") 
+pt_pdx <- pdx$multipolygon %>% sf::st_centroid()
+
+# Coords for Portland, ME
+ptm <- osmdata::getbb("Portland, ME", format_out="sf_polygon")
+pt_ptm <- ptm$multipolygon %>% sf::st_centroid()
+
+# Route from Portland to Portland
+df.rte <- osrm::osrmRoute(src=pt_pdx, dst=pt_ptm) %>%
+  mutate(pt = crd_to_points(lon,lat))
+```
+</details>
+
+<br>
+
+The simulated dataset is generated from five hundred imaginary trips.  For each trip noise is added by sampling from a Normal distribution with centroid value being the point coordinates.
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r, message=FALSE, warning=FALSE}
+# Simulate some data
+N <- 500
+set.seed(1234)  # So random numbers are repeatable
+d <- lapply(1:nrow(df.rte), function(i) {
+  lon <- rnorm(N,df.rte$lon[i]) #+ rbinom(N,3,0.2)
+  lat <- rnorm(N,df.rte$lat[i]) #+ rbinom(N,2,0.2)
+  idx_tr <- 1:N
+  idx_pt <- i
+  data.frame(lon=lon, lat=lat,idx_tr=idx_tr, idx_pt=idx_pt)
+})
+df.dat <- do.call(rbind,d) %>% 
+  mutate(pt = crd_to_points(lon,lat),
+         hex = h3::geo_to_h3(c(lat,lon), res=3)) %>%
+  arrange(idx_tr,idx_pt) 
+```
+</details>
+
+<br>
+
+The original route is displayed below left in black.  Simulated points are shown as grey dots.  At right are the simulated data aggregated by geohash.  The geohash data are generated via `h3` and will be used in the analysis below.
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#
+# Plot the route as a line and super-impose
+# a sample of the simulated lines for illustrative purposes
+#
+ln <- make_line(sf::st_coordinates(df.rte$pt)) %>% sf::st_sfc(crs=4326)
+df.tmp <- df.dat %>% 
+  group_by(idx_tr) %>% 
+  summarise(ln = make_line(sf::st_coordinates(pt)) %>% sf::st_sfc(crs=4326))
+p1 <- df.dat %>% #df.tmp[sample(nrow(df.tmp),10),] %>%
+  ggplot() +
+  geom_sf(aes(geometry=pt), alpha=0.3, color="grey65", size=0.5) +
+  geom_sf(data=ln, aes(geometry=geometry)) +
+  theme_void()
+
+#
+# Plot a hex representation of all the simulated points
+#
+df.hex <- df.dat %>% 
+  group_by(hex) %>% 
+  count() %>%
+  mutate(geometry = h3::h3_to_geo_boundary_sf(hex) %>% pull(geometry)) #%>%
+p2 <- df.hex %>% 
+  ggplot() +
+  geom_sf(aes(geometry=geometry, fill=n),color=NA) + 
+  scale_fill_gradient(low="grey75",high="firebrick", guide="none") +
+  theme_void()
+
+```
+</details>
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width="48%", fig.show="hold"}
+p1
+p2
+```
+
+<br>
+
+## Model Construction
+
+A model is created that uses the _current_ geohash to predict the _next_ geohash.  The "model" in this case is really just a collection of hex-pairs plus the number of times this pair was seen in the data.  
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r, warning=FALSE, message=FALSE}
+# Create hex pairs: hex to next-hex
+model_stuff <- function(df) {
+  df %>% rename(hex0=hex) %>%
+    mutate(hex1 = lead(hex0, n=1), n=1)
+}
+
+# Build the correlation model
+df.mod <- df.dat %>%
+  dplyr::select(idx_tr, idx_pt, hex) %>%
+  tidyr::nest(data=c(idx_pt,hex)) %>%
+  mutate(data = purrr::map(data,model_stuff)) %>%
+  unnest(cols=c(data)) %>%
+  group_by(hex0,hex1) %>%
+  summarise(w = sum(n)) %>%
+  ungroup()
+```
+</details>
+
+<br>
+
+## Monte Carlo
+
+Next, a driver function is created that will run the monte carlo process to completion.  In other words, the function takes a starting point and uses the model generated above to probabilistically determine which hex to land on next.  The process continues until either the end is reached or the maximum number of iterations is reached.
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r, message=FALSE, warning=FALSE}
+
+# Pick the next hex based on the present hex
+random_picker <- function(hex, df.model) {
+  df <- df.model %>% filter(hex0==hex) #%>% mutate(z=w/sum(w))
+  df$z <- df$w/sum(df$w)
+  if (nrow(df) > 0) {
+    hx <- sample(df$hex1, 1, prob=df$z)
+  } else {hx <- NA}
+}
+
+# Get all the possible start points
+start_points <- df.dat %>%
+  filter(idx_pt == 1) %>%
+  group_by(hex) %>%
+  count() 
+start_points$r <- start_points$n/sum(start_points$n)
+
+
+# Monte Carlo function
+my_monte_carlo <- function(start, max_iter, df.model) {
+  d <- list()
+  d[[1]] <- start
+  for (i in 2:max_iter) {
+    hex_new <- d[[i-1]]
+    d[[i]] <- random_picker(hex_new, df.model)
+    if (is.na(d[[i]])) {break}
+  }
+  M <- length(d)
+  data.frame(idx=1:M, hex=unlist(d)) %>%
+    filter(!is.na(hex)) %>%
+    mutate(geometry = h3::h3_to_geo_boundary_sf(hex) %>% pull(geometry),
+           pt = sf::st_centroid(geometry))
+}
+```
+</details>
+
+To run the monte carlo, a starting point is selected from a random sample of starting points seen in the data. The function then traces a likely path based on correlations included in the supplied model. The result is a single path derived from the monte carlo model,
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r, message=FALSE, warning=FALSE}
+# Get a random start point
+fstart <- sample(start_points$hex, 1, prob=start_points$r) 
+df.mte <- my_monte_carlo(fstart, max_iter=30, df.mod)
+ln2 <- df.mte %>% pull(pt) %>% sf::st_coordinates() %>% make_line() %>% sf::st_sfc(crs=4326)
+```
+</details>
+
+```{r, echo=FALSE, out.width="60%", , fig.align="center"}
+px <- ggplot() +
+  geom_sf(data=ln, aes(geometry=geometry)) +
+  geom_sf(data=ln2, aes(geometry=geometry), color="firebrick", alpha=0.5, size=0.5) +
+  theme_void() 
+px
+```
+
+<br>
+
+Now we can run the simulation as many times as we want,
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r, message=FALSE, warning=FALSE}
+N <- 10
+fstart <- sample(start_points$hex, N, prob=start_points$r) 
+dd <- lapply(1:N, function(i) {
+  my_monte_carlo(fstart[i], max_iter=30, df.mod) %>% mutate(nn = i)
+})
+df.mte2 <- do.call(rbind,dd) %>%
+  group_by(nn) %>%
+  summarise(ln = sf::st_coordinates(pt) %>% make_line() %>% sf::st_sfc(crs=4326))
+```
+</details>
+
+```{r, echo=FALSE, out.width="60%", fig.align="center"}
+py <- px + geom_sf(data=df.mte2, aes(geometry=ln), color="firebrick", alpha=0.3, size=0.5)
+py
+```
+
+<br>
+
+
+## Next-Hex Probabilities
+
+With the model constructed above it is straightforward to simply plot the next-hex probabilities given some current geohash position, 
+
+<details>
+<summary style="font-size:15px">CODE</summary>
+```{r}
+set.seed(1234)
+fstart <- sample(start_points$hex, 1, prob=start_points$r) 
+dfx <- df.mod %>% filter(hex0==fstart) 
+dfx$z <- dfx$w/sum(dfx$w)
+
+df.prb <- dfx %>%
+  mutate(geometry = h3::h3_to_geo_boundary_sf(hex1) %>% pull(geometry))
+```
+</details>
+
+In the example below, the current-hex is depicted in black, and the next-hex probabilities are represented by fill color in the surrounding geohashes,
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, out.width="85%", fig.align="center"}
+hex0 <- df.prb$hex0 %>% unique()
+p.prb <- ggplot() +
+  geom_sf(data=df.hex, aes(geometry=geometry),fill="grey95",color=NA) +
+  geom_sf(data=df.prb, aes(geometry=geometry, fill=z), color="grey99",size=0.1) +
+  geom_sf(data=df.hex %>% filter(hex==hex0), aes(geometry=geometry), fill="grey10") +
+  scale_fill_gradient(low="grey70",high="firebrick", guide="none") +
+  theme_void()
+  
+```
+
+
+
+
+
+
+
+```{r, eval=FALSE, echo=FALSE}
+## Old stuff
+model_stuff <- function(df) {
+  df %>% 
+    mutate(hex0 = hex, n=1) %>%
+    pivot_wider(id_cols=c("idx_pt","hex0"), names_from=c("hex"), values_from=c("n"), values_fill=0) %>%
+    #dplyr::select(-idx_pt,-hex0) %>%
+    mutate_if(is.double, RcppRoll::roll_mean,n=3, weights=c(0,1,1), align="right", fill=0) %>%
+    pivot_longer(cols=-c("idx_pt","hex0")) %>% 
+    filter(value > 0) %>%
+    mutate(value = 2*value)
+
+  ## --> now pivot_longer so we have hex0, hex-pre, val
+  ## --> then, aggregate by pair & sum values, pivot_wider, then we should be ready to fit the data
+  }
+
+
+
+df.mod <- df.dat %>%
+  dplyr::select(idx_tr, idx_pt, hex) %>%
+  tidyr::nest(data=c(idx_pt,hex)) %>%
+  mutate(data = purrr::map(data,model_stuff)) %>%
+  tidyr::unnest(cols=c(data)) %>%
+  group_by(hex0, name) %>%
+  summarise(w = sum(value)) %>%
+  ungroup() #%>%
+  #mutate(w = w/max(w))
+
+
+
+mutate_all(RcppRoll::roll_mean,n=3, weights=c(0,1,1), align="right", fill=0) %>%
+  cor() %>%                 # compute correlation matrix
+  as.data.frame() %>%       # convert back to df
+  mutate_all(newval)        # replace negative coeffs w/ zero
+df.new <- df/colSums(df)    # normalize columns so they sum to 1.0
+```
+
+<br>
+
+## References
+
+[h3 package](https://crazycapivara.github.io/h3-r/articles/h3.html)
+
+<br>
+<hr>
+<br>
+<br>

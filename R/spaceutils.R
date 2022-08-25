@@ -73,12 +73,14 @@ spaceheater_utmzone <- function(lon) {
 #'
 #' @examples 
 #' lonlat <- c(-76.2, 33.5)                 # coordinates
-#' pt1 <- sf::st_point(lonlat)              # sfc object
-#' pt2 <- sf::st_sfc(pt1) %>% sf::st_sf()   # sf object
+#' pt1 <- sf::st_point(lonlat)              # sfg object
+#' pt2 <- sf::sfc(pt1)                      # sfc object
+#' pt2 <- sf::st_sf(pt2)                    # sf object
 #' 
 #' get_epsg(lonlat)
 #' get_epsg(pt1)
 #' get_epsg(pt2)
+#' get_epsg(pt3)
 get_epsg <- function(x) {UseMethod("get_epsg")}
 
 # Methods
@@ -117,6 +119,13 @@ get_epsg.sfc <- function(x) {
 #' @export
 #'
 get_epsg.sf <- function(x) {
+  z <- sf::st_bbox(x)
+  return(epsg1( c(mean(z["xmin"],z["xmax"]),
+                  mean(z["ymin"],z["ymax"]))))
+}
+
+
+get_epsg.sfg <- function(x) {
   z <- sf::st_bbox(x)
   return(epsg1( c(mean(z["xmin"],z["xmax"]),
                   mean(z["ymin"],z["ymax"]))))

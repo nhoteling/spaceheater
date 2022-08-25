@@ -24,12 +24,14 @@ by Robin Lovelace, section 7.3
 }
 \examples{
 lonlat <- c(-76.2, 33.5)                 # coordinates
-pt1 <- sf::st_point(lonlat)              # sfc object
-pt2 <- sf::st_sfc(pt1) \%>\% sf::st_sf()   # sf object
+pt1 <- sf::st_point(lonlat)              # sfg object
+pt2 <- sf::sfc(pt1)                      # sfc object
+pt2 <- sf::st_sf(pt2)                    # sf object
 
 get_epsg(lonlat)
 get_epsg(pt1)
 get_epsg(pt2)
+get_epsg(pt3)
 }
 \seealso{
 \code{\link{get_epsg.default()}}
