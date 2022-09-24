@@ -1,11 +1,7 @@
 ---
-title: "Alphahull"
+title: "The Alpha Convex Hull"
 output: html_document
 ---
-
-<hr>
-<br>
-<br>
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -72,16 +68,13 @@ df.pdx <- df.breweries %>% filter(dist_Portland < 150)
 df.chi <- df.breweries %>% filter(dist_Chicago < 200)
 ```
 
-## Introduction
-
-The alpha convex hull underlies several of the spatial outlier methods implemented in `spaceheater`.  The method is implemented via the `alphahull` package (however, if this proves too slow for some applications there may be an option to use an [Rcpp version](https://github.com/federicoairoldi/ProgettoPACS) instead).  For this reason, it's worth taking a closer look at exactly how it works, and how the parameters affect the output.
-
-```{r}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+## The figure sequence in the header
 pts <- df.pdx$geometry
 tension <- c(1.00, 0.50, 0.10, 0.05)
 
 pgon <- lapply(1:length(tension), function(i) {
-  return( get_alphahull_polygon(pts, tension=tension[i], buffer_size=0) )
+  return( get_alphahull_polygon(pts, tension=tension[i], buffer_size=0.1) )
 })
 
 p.tension1 <- lapply(1:length(tension), function(i) {
@@ -92,15 +85,28 @@ p.tension1 <- lapply(1:length(tension), function(i) {
     theme_void()
   return(p)
 })
-
 ```
 
-```{r, echo=FALSE, fig.show="hold", out.width="50%"}
+<hr>
+
+```{r, echo=FALSE, fig.show="hold", out.width="25%"}
 p.tension1[[1]]
 p.tension1[[2]]
 p.tension1[[3]]
 p.tension1[[4]]
 ```
+
+<hr>
+<br>
+<br>
+
+## Introduction
+
+The alpha convex hull underlies several of the spatial outlier methods implemented in `spaceheater`.  The method is implemented via the `alphahull` package (however, if this proves too slow for some applications there may be an option to use an [Rcpp version](https://github.com/federicoairoldi/ProgettoPACS) instead).  For this reason, it's worth taking a closer look at exactly how it works, and how the parameters affect the output.
+
+
+
+
 
 ## How Does It Work?
 
@@ -147,4 +153,27 @@ p.tension2[[1]]
 p.tension2[[2]]
 p.tension2[[3]]
 p.tension2[[4]]
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+p.pgon <- lapply(1:length(tension), function(i){
+  pgon <- get_alphahull_polygon(pts, tension[i], buffer=0.1)
+  
+  p <- ggplot() +
+    #geom_sf(data=circle,aes(geometry=geometry), fill=NA, color="grey75",size=0.2) +
+    geom_sf(data=pts, aes(geometry=geometry), color="grey65") +
+    #geom_point(data=data.frame(x$x)[x$alpha.extremes,], 
+    #           aes(x=X1,y=X2), size=2,color="#de2d26") +
+    geom_sf(data=pgon, aes(geometry=geometry), fill=NA) +
+    labs(title = paste("tension = ", tension[i], sep="")) +
+    theme_void()
+})
+```
+
+```{r, echo=FALSE, fig.show="hold", out.width="50%"}
+p.pgon[[1]]
+p.pgon[[2]]
+p.pgon[[3]]
+p.pgon[[4]]
 ```
